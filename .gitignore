@@ -161,7 +161,9 @@ TODO.txt
 /temp2
 nsfw_ai_model_server/
 /config/models/*
+/config/active_ai.yaml
 models/.ai_license_fingerprint
+/models
 
 # Docker
 docker_*.log
