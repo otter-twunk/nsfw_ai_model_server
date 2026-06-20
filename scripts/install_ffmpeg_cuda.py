@@ -46,7 +46,7 @@ PREFERRED_RELEASE_TAG: str | None = None
 # Set PREFERRED_FFMPEG_VERSION to filter assets by version token within their
 # filename (for example, "6.1" to pick FFmpeg 6.1.x builds). Set to None to
 # accept whatever version the release provides.
-PREFERRED_FFMPEG_VERSION: str | None = "8.0"
+PREFERRED_FFMPEG_VERSION: str | None = "8.1"
 
 ASSET_RULES = {
     ("Windows", "x86_64"): [
