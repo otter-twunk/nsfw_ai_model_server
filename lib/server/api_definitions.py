@@ -49,3 +49,6 @@ class AIModelInfo(BaseModel):
     version: float
     categories: List[str]
     type: str
+
+class ActiveModelsPayload(BaseModel):
+    active_ai_models: List[str]

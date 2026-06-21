@@ -5,8 +5,15 @@ from fastapi import HTTPException
 from lib.model.postprocessing import tag_models, timeframe_processing
 from lib.model.postprocessing.AI_VideoResult import AIVideoResult
 from lib.model.preprocessing.input_logic import process_video_preprocess
-from lib.server.api_definitions import ImagePathList, ImageRequestV3, OptimizeMarkerSettings, VideoPathList, ImageResult, VideoRequestV3, VideoResult
+from lib.server.api_definitions import (
+    ImagePathList, ImageRequestV3, OptimizeMarkerSettings,
+    VideoPathList, ImageResult, VideoRequestV3, VideoResult,
+    ActiveModelsPayload,
+)
 from lib.server.server_manager import server_manager, app, outstanding_requests_middleware
+from lib.configurator.configure_active_ai import (
+    load_available_ai_models, load_active_ai_models, save_active_ai_models,
+)
 import torch
 import time
 from lib.model.postprocessing.category_settings import category_config
@@ -39,7 +46,7 @@ async def process_video(request: VideoPathList):
     try:
         logger.info(f"Processing video at path: {request.path}")
         pipeline_name = request.pipeline_name or server_manager.default_video_pipeline
-        
+
 
         video_result, json_save_needed = AIVideoResult.from_client_json(json=request.existing_json_data)
 
@@ -49,7 +56,7 @@ async def process_video(request: VideoPathList):
 
             #TODO: need to cover the case of a threshold/frame_interval not passed into the request
             ai_work_needed, skipped_categories = process_video_preprocess(video_result, request.frame_interval, request.threshold, pipeline_to_use)
-            
+
             if not ai_work_needed:
                 # No models need to run but we may need to update client json and we need to regenerate timespans and tags
                 json_result = None
@@ -67,7 +74,7 @@ async def process_video(request: VideoPathList):
             result = await future
         except Exception as e:
             raise HTTPException(status_code=400, detail=str(e))
-        
+
         return_result = VideoResult(result=result)
         logger.debug(f"Returning Video Result for: '{request.path}' Results: {return_result}")
         return return_result
@@ -75,14 +82,14 @@ async def process_video(request: VideoPathList):
         logger.error(f"Error processing video: {e}")
         logger.debug("Stack trace:", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-    
+
 @app.post("/v3/process_video/")
 async def process_video_v3(request: VideoRequestV3):
     try:
         logger.info(f"Processing video in v3 at path: {request.path}")
 
         pipeline_name = "video_pipeline_dynamic_v3"
-        
+
         data = [request.path, True, request.frame_interval, request.threshold, request.return_confidence, request.vr_video, request.categories_to_skip]
 
         result = None
@@ -98,7 +105,7 @@ async def process_video_v3(request: VideoRequestV3):
         logger.error(f"Error processing video: {e}")
         logger.debug("Stack trace:", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-    
+
 @app.post("/v3/process_images/")
 async def process_images_v3(request: ImageRequestV3):
     try:
@@ -167,7 +174,7 @@ async def get_current_video_ai_models():
         logger.error(f"Error getting current video AI models: {e}")
         logger.debug("Stack trace:", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
-    
+
 @app.post("/optimize_timeframe_settings/")
 async def optimize_timeframe_settings(request: OptimizeMarkerSettings):
     try:
@@ -182,7 +189,7 @@ async def optimize_timeframe_settings(request: OptimizeMarkerSettings):
             for category, category_dict in category_config.items():
                 for tag, renamed_tag in category_dict.items():
                     renamedtag_category_dict[renamed_tag["RenamedTag"]] = category
-            
+
             for tag, time_frames in desired_timespan_data.items():
                 category = renamedtag_category_dict.get(tag, "Unknown")
                 if category not in desired_timespan_category_dict:
@@ -190,7 +197,7 @@ async def optimize_timeframe_settings(request: OptimizeMarkerSettings):
                 time_frames_new = [tag_models.TimeFrame(**(json.loads(time_frame)), totalConfidence=None) for time_frame in time_frames]
                 desired_timespan_category_dict[category][tag] = time_frames_new
             timeframe_processing.determine_optimal_timespan_settings(video_result, desired_timespan_data=desired_timespan_category_dict)
-        return 
+        return
     except Exception as e:
         logger.error(f"Error processing video: {e}")
         logger.debug("Stack trace:", exc_info=True)
@@ -275,3 +282,76 @@ async def ready_check():
     except Exception as e:
         logger.error(f"Readiness check error: {e}")
         raise HTTPException(status_code=503, detail=str(e))
+
+
+# ── Model management endpoints ─────────────────────────────────────────────────
+
+@app.get("/v3/available_models/")
+async def get_available_models():
+    """Return all installed model configs (type==model with a category)."""
+    try:
+        return load_available_ai_models()
+    except Exception as e:
+        logger.error(f"Error getting available models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/v3/active_models/")
+async def get_active_models():
+    """Return the model names that will be loaded on the next server start."""
+    try:
+        return {"active_ai_models": load_active_ai_models()}
+    except Exception as e:
+        logger.error(f"Error getting active models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v3/active_models/")
+async def set_active_models(payload: ActiveModelsPayload):
+    """
+    Validate and persist a new set of active models.
+    Rules (same as the curses TUI):
+      - All names must exist in available models.
+      - All selected models must share the same model_image_size.
+      - No two selected models may share a model_category.
+    Returns {"status": "saved", "restart_required": true} on success.
+    """
+    try:
+        requested: list[str] = payload.active_ai_models or []
+
+        if not requested:
+            save_active_ai_models([])
+            return {"status": "saved", "restart_required": True}
+
+        available = {m["yaml_file_name"]: m for m in load_available_ai_models()}
+
+        for name in requested:
+            if name not in available:
+                raise HTTPException(status_code=400, detail=f"Unknown model: '{name}'")
+
+        sizes = {available[n]["model_image_size"] for n in requested}
+        if len(sizes) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Image size mismatch: selected models have sizes {sorted(sizes)}. "
+                       "All active models must share the same image size.",
+            )
+
+        seen_categories: set[str] = set()
+        for name in requested:
+            for cat in available[name].get("model_category", []):
+                if cat in seen_categories:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Category conflict: '{cat}' is already covered by another selected model.",
+                    )
+                seen_categories.add(cat)
+
+        save_active_ai_models(requested)
+        return {"status": "saved", "restart_required": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error setting active models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
