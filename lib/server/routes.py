@@ -171,9 +171,9 @@ async def get_current_video_ai_models():
         ai_models = pipeline.get_ai_models_info()
         return ai_models
     except Exception as e:
-        logger.error(f"Error getting current video AI models: {e}")
+        logger.warning(f"Current video AI models unavailable: {e}")
         logger.debug("Stack trace:", exc_info=True)
-        raise HTTPException(status_code=400, detail=str(e))
+        return []
 
 @app.post("/optimize_timeframe_settings/")
 async def optimize_timeframe_settings(request: OptimizeMarkerSettings):
@@ -272,16 +272,28 @@ async def health_check():
 
 @app.get("/ready")
 async def ready_check():
-    """Readiness: returns 200 if pipelines are loaded and server is ready to accept requests."""
+    """Readiness: returns 200 only when pipelines are loaded and requestable."""
     try:
         pipelines = server_manager.pipeline_manager.pipelines
-        if pipelines and len(pipelines) > 0:
-            return {"ready": True, "loaded_pipelines": list(pipelines.keys())}
-        else:
-            raise HTTPException(status_code=503, detail="No pipelines loaded")
-    except Exception as e:
-        logger.error(f"Readiness check error: {e}")
-        raise HTTPException(status_code=503, detail=str(e))
+        loaded_pipelines = list(pipelines.keys()) if pipelines else []
+        if not loaded_pipelines:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "ready": False,
+                    "loaded_pipelines": [],
+                    "message": "No NSFW AI pipelines are loaded.",
+                },
+            )
+        return {
+            "ready": True,
+            "loaded_pipelines": loaded_pipelines,
+        }
+    except Exception as exc:
+        if isinstance(exc, HTTPException):
+            raise exc
+        logger.error(f"Readiness check error: {exc}")
+        raise HTTPException(status_code=503, detail=str(exc))
 
 
 # ── Model management endpoints ─────────────────────────────────────────────────
@@ -335,6 +347,14 @@ async def set_active_models(payload: ActiveModelsPayload):
                 status_code=400,
                 detail=f"Image size mismatch: selected models have sizes {sorted(sizes)}. "
                        "All active models must share the same image size.",
+            )
+
+        normalization_configs = {available[n].get("normalization_config") for n in requested}
+        if len(normalization_configs) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Normalization mismatch: selected models use different normalization_config values. "
+                       "All active models must share the same normalization config.",
             )
 
         seen_categories: set[str] = set()

@@ -6,7 +6,8 @@ from lib.migrations.migration_v20 import migrate_to_2_0
 from lib.server.exceptions import NoActiveModelsException
 
 
-ai_active_directory = "./config/active_ai.yaml"
+import os
+ai_active_directory = os.getenv("NSFW_ACTIVE_AI_YAML", "./config/active_ai.yaml")
 
 
 

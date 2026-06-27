@@ -65,14 +65,20 @@ class ServerManager:
             raise ServerStopException("No pipelines found in the configuration file.")
         try:
             await self.pipeline_manager.load_pipelines(pipelines)
-        except NoActiveModelsException as e:
-            self.logger.error(f"Error: No active AI models found in active_ai.yaml")
+        except NoActiveModelsException:
+            self.logger.warning("No active AI models found in active_ai.yaml; starting in degraded mode without loaded pipelines.")
             try:
                 choose_active_models()
-            except Exception as e:
-                self.logger.debug(f"Error: {e}")
-            raise ServerStopException("No active AI models. Choose models in select_ai_models.ps1/sh and start the server again.")
-        self.logger.info("Pipelines loaded successfully")
+            except Exception as exc:
+                self.logger.debug(f"Error while attempting to choose active models: {exc}")
+        except ServerStopException as exc:
+            self.logger.warning(f"Pipeline load skipped during startup: {exc}")
+
+        if self.pipeline_manager.pipelines:
+            self.logger.info("Pipelines loaded successfully")
+        else:
+            self.logger.warning("Server startup completed in degraded mode with no loaded pipelines.")
+
         self.background_task = asyncio.create_task(check_inactivity())
 
     async def get_request_future(self, data, pipeline_name):

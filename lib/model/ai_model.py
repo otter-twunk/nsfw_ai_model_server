@@ -109,15 +109,17 @@ class AIModel(Model):
     async def load(self):
         if self.model is None:
             self.logger.info(f"Loading model {self.model_file_name} with batch size {self.max_model_batch_size}, {self.max_queue_size}, {self.max_batch_size}")
+            import os
+            model_dir = os.getenv("NSFW_MODEL_DIR", "./models")
             if self.model_license_name is None:
-                self.model = PythonModel(f"./models/{self.model_file_name}.pt", self.max_model_batch_size, self.device, self.fill_to_batch)
+                self.model = PythonModel(f"{model_dir}/{self.model_file_name}.pt", self.max_model_batch_size, self.device, self.fill_to_batch)
             else:
                 from ai_processing import ModelRunner
-                model_file_path = f"./models/{self.model_file_name}.pt2.enc"
+                model_file_path = f"{model_dir}/{self.model_file_name}.pt2.enc"
                 if self.model_license_name.endswith(".0"):
-                    model_file_path = f"./models/{self.model_file_name}.pt.enc"
-                self.model = ModelRunner(model_file_path, f"./models/{self.model_license_name}.lic", self.max_model_batch_size, self.device)
-            self.tags = get_index_to_tag_mapping(f"./models/{self.model_file_name}.tags.txt")
+                    model_file_path = f"{model_dir}/{self.model_file_name}.pt.enc"
+                self.model = ModelRunner(model_file_path, f"{model_dir}/{self.model_license_name}.lic", self.max_model_batch_size, self.device)
+            self.tags = get_index_to_tag_mapping(f"{model_dir}/{self.model_file_name}.tags.txt")
             if self.model_category is not None and len(self.model_category) == 1 and self.category_mappings is None:
                 self.category_mappings = {i: 0 for i, _ in  enumerate(self.tags)}
         else:

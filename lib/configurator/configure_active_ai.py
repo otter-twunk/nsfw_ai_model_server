@@ -3,8 +3,8 @@ import yaml
 import curses
 
 # Static file paths
-active_ai_yaml_path = "./config/active_ai.yaml"
-ai_models_directory = "./config/models"
+active_ai_yaml_path = os.getenv("NSFW_ACTIVE_AI_YAML", "./config/active_ai.yaml")
+ai_models_directory = os.getenv("NSFW_AI_MODELS_DIR", "./config/models")
 
 def load_active_ai_models():
     with open(active_ai_yaml_path, 'r') as f:
