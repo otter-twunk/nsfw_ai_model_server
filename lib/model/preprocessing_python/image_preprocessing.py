@@ -565,12 +565,12 @@ def preprocess_video_deffcode_auto(
     if device:
         target_device = torch.device(device)
     else:
-        target_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        target_device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
 
     use_gpu_preprocessing = False
     
     # Determine if GPU preprocessing should be used based on resolution
-    if target_device.type == 'cuda':
+    if target_device.type in ('cuda', 'mps'):
         try:
             # Probe video metadata to check resolution using the higher-level Sourcer API
             sourcer = Sourcer(video_path).probe_stream()
@@ -611,7 +611,12 @@ def preprocess_video_deffcode_auto(
     if use_gpu_preprocessing:
         try:
             yielded_any = False
-            for item in preprocess_video_deffcode_gpu(
+            if target_device.type == 'mps':
+                gpu_preprocess_func = preprocess_video_deffcode_videotoolbox
+            else:
+                gpu_preprocess_func = preprocess_video_deffcode_gpu
+                
+            for item in gpu_preprocess_func(
                 video_path=video_path,
                 frame_interval=frame_interval,
                 img_size=img_size,
@@ -667,7 +672,7 @@ def preprocess_video_deffcode(
     if device:
         device = torch.device(device)
     else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device('cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu')
 
     mean, std = get_normalization_config(norm_config, device)
 
@@ -883,6 +888,127 @@ def preprocess_video_deffcode_gpu(
                 effective_fps = interval_fps
 
         # FFmpeg select filter handles frame skipping, so we process all frames returned
+        for index, frame in enumerate(decoder.generateFrame()):
+            if frame is None:
+                continue
+
+            tensor = _prepare_frame(frame, device, vr_video, frame_transforms)
+
+            if use_timestamps:
+                if frame_interval and frame_interval > 0:
+                    output_index = processed * frame_interval
+                else:
+                    output_index = index / (effective_fps or 1.0)
+            else:
+                if frame_interval and frame_interval > 0:
+                    output_index = processed * frame_step_frames
+                else:
+                    output_index = index
+
+            yield (output_index, tensor)
+            processed += 1
+    finally:
+        terminate = getattr(decoder, "terminate", None)
+        if callable(terminate):
+            terminate()
+
+
+def preprocess_video_deffcode_videotoolbox(
+    video_path,
+    frame_interval=0.5,
+    img_size=512,
+    use_half_precision=True,
+    device=None,
+    use_timestamps=False,
+    vr_video=False,
+    norm_config=1,
+):
+    """
+    Preprocess video using Apple VideoToolbox hardware acceleration via DeFFcode.
+    Uses GPU-based decoding for maximum performance.
+    """
+    video_path = _validate_local_video_source(video_path)
+    if device:
+        device = torch.device(device)
+    else:
+        device = torch.device('mps' if torch.backends.mps.is_available() else 'cpu')
+
+    mean, std = get_normalization_config(norm_config, device)
+
+    # Always use PyTorch resize for consistency
+    frame_transforms = get_frame_transforms(
+        use_half_precision,
+        mean,
+        std,
+        vr_video=vr_video,
+        img_size=img_size,
+        apply_resize=True,
+    )
+
+    # Probe metadata for framerate
+    decoder_cls = _get_deffcode_decoder()
+    probe_decoder = decoder_cls(video_path, frame_format="null").formulate()
+    try:
+        metadata = json.loads(probe_decoder.metadata)
+    except Exception:
+        metadata = {}
+    finally:
+        terminate = getattr(probe_decoder, "terminate", None)
+        if callable(terminate):
+            terminate()
+
+    source_fps = _parse_fps_value(metadata.get("source_video_framerate")) if metadata else None
+    effective_fps = source_fps or 30.0
+
+    ffprefixes = ["-vsync", "0", "-hwaccel", "videotoolbox"]
+
+    frame_step_frames = 1
+    if frame_interval and frame_interval > 0:
+        if source_fps:
+            frame_step_frames = max(1, round(source_fps * frame_interval))
+        else:
+            frame_step_frames = max(1, round(1.0 / frame_interval))
+
+    vf_filters = []
+    if frame_step_frames > 1:
+        vf_filters.append(f"select=not(mod(n\\,{frame_step_frames}))")
+
+    decoder_kwargs = {
+        "-ffprefixes": ffprefixes,
+        "-custom_resolution": "null",
+        "-framerate": "null",
+    }
+    if vf_filters:
+        decoder_kwargs["-vf"] = ",".join(vf_filters)
+
+    decoder = decoder_cls(
+        video_path,
+        frame_format="rgb24",
+        **decoder_kwargs,
+    ).formulate()
+
+    processed = 0
+
+    try:
+        try:
+            runtime_meta = json.loads(decoder.metadata)
+        except Exception:
+            runtime_meta = metadata
+
+        if source_fps and frame_step_frames:
+            effective_fps = source_fps / frame_step_frames
+
+        if runtime_meta and not effective_fps:
+            effective_fps = _parse_fps_value(runtime_meta.get("output_framerate"))
+            if not effective_fps:
+                effective_fps = _parse_fps_value(runtime_meta.get("source_video_framerate"))
+        if not effective_fps:
+            effective_fps = _parse_fps_value(metadata.get("source_video_framerate")) if metadata else 30.0
+        if frame_interval and frame_interval > 0:
+            interval_fps = _target_fps(frame_interval)
+            if interval_fps:
+                effective_fps = interval_fps
+
         for index, frame in enumerate(decoder.generateFrame()):
             if frame is None:
                 continue

@@ -8,7 +8,8 @@ from lib.model.preprocessing_python.image_preprocessing import (
     preprocess_video,
     preprocess_video_deffcode,
     preprocess_video_deffcode_gpu,
-    preprocess_video_deffcode_auto
+    preprocess_video_deffcode_auto,
+    preprocess_video_deffcode_videotoolbox
 )
 
 class VideoPreprocessorModel(Model):
@@ -29,15 +30,27 @@ class VideoPreprocessorModel(Model):
         if requested_backend in {"deffcode_gpu", "deffcode", "deffcode_auto"}:
             backend_choice = requested_backend
             if backend_choice == "deffcode_gpu" and not torch.cuda.is_available():
-                self.logger.warning(
-                    "CUDA is not available; falling back to DeFFcode CPU backend for video preprocessing"
-                )
-                backend_choice = "deffcode"
+                if torch.backends.mps.is_available():
+                    self.logger.info(
+                        "CUDA is not available; selecting DeFFcode Auto with Apple Silicon (MPS/VideoToolbox) support"
+                    )
+                    backend_choice = "deffcode_auto"
+                else:
+                    self.logger.warning(
+                        "CUDA is not available; falling back to DeFFcode CPU backend for video preprocessing"
+                    )
+                    backend_choice = "deffcode"
             elif backend_choice == "deffcode_auto" and not torch.cuda.is_available():
-                self.logger.info(
-                    "DeFFcode Auto selected and CUDA is not available; falling back to DeFFcode CPU backend for video preprocessing"
-                )
-                backend_choice = "deffcode"
+                if torch.backends.mps.is_available():
+                    self.logger.info(
+                        "DeFFcode Auto selected and CUDA is not available; utilizing Apple Silicon (MPS/VideoToolbox) acceleration"
+                    )
+                    # Let it stay deffcode_auto
+                else:
+                    self.logger.info(
+                        "DeFFcode Auto selected and CUDA is not available; falling back to DeFFcode CPU backend for video preprocessing"
+                    )
+                    backend_choice = "deffcode"
 
             if backend_choice == "deffcode_gpu":
                 self._preprocess_backend = "deffcode_gpu"
