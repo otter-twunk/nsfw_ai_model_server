@@ -103,8 +103,7 @@ def _validate_local_video_source(video_path: str) -> str:
     if not os.path.exists(normalized):
         raise FileNotFoundError(
             f"Video file not found: '{normalized}'. "
-            "If you're running the server in Docker, make sure the host folder containing the video is mounted into the container, "
-            "and path mapping configured in AI Overhaul"
+            "Make sure the file exists and is accessible."
         )
 
     if not os.path.isfile(normalized):
